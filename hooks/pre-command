@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+domain="${BUILDKITE_PLUGIN_CI_SERVER_CHECKS_DOMAIN:-}"
+alert_days="${BUILDKITE_PLUGIN_CI_SERVER_CHECKS_ALERT_DAYS:-10}"
+
+fail() {
+  echo "CI Server Checks: $*" >&2
+  exit 1
+}
+
+if [[ -z "$domain" ]]; then
+  fail "configuration option 'domain' is required."
+fi
+
+# Accept a hostname or FQDN; reject schemes, paths, ports, whitespace and shell metacharacters.
+if [[ ! "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] ||
+   [[ "$domain" == *..* ]] ||
+   (( ${#domain} > 253 )); then
+  fail "invalid domain format: $domain"
+fi
+
+if [[ ! "$alert_days" =~ ^[0-9]+$ ]] || (( alert_days < 1 )); then
+  fail "'alert-days' must be a positive integer."
+fi
+
+for command_name in getent openssl timeout; do
+  command -v "$command_name" >/dev/null 2>&1 ||
+    fail "required command '$command_name' is not installed."
+done
+
+echo "--- :mag: Checking DNS for ${domain}"
+if ! getent ahosts "$domain" >/dev/null 2>&1; then
+  fail "DNS resolution failed for ${domain}."
+fi
+echo "CI Server Checks: DNS resolution passed for ${domain}."
+
+cert_file="$(mktemp)"
+error_file="$(mktemp)"
+cleanup() {
+  rm -f "$cert_file" "$error_file"
+}
+trap cleanup EXIT
+
+echo "--- :lock: Checking HTTPS certificate for ${domain} (expiry threshold: ${alert_days} days)"
+if ! timeout 20 openssl s_client \
+  -connect "${domain}:443" \
+  -servername "$domain" \
+  -verify_hostname "$domain" \
+  -verify_return_error \
+  </dev/null 2>"$error_file" |
+  openssl x509 -out "$cert_file" 2>>"$error_file"; then
+  cat "$error_file" >&2
+  fail "could not retrieve and validate the HTTPS certificate for ${domain}."
+fi
+
+threshold_seconds=$(( alert_days * 86400 ))
+if ! openssl x509 -in "$cert_file" -checkend "$threshold_seconds" -noout >/dev/null 2>&1; then
+  fail "HTTPS certificate for ${domain} is expired, invalid, or expires within ${alert_days} days."
+fi
+
+echo "CI Server Checks: DNS and HTTPS certificate checks passed for ${domain}."

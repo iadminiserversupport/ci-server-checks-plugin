@@ -1,0 +1,21 @@
+name: CI Server Checks
+description: Check DNS resolution and HTTPS certificate validity before a Buildkite step.
+author: https://github.com/iserver-support
+requirements:
+  - bash
+  - getent
+  - openssl
+  - timeout
+configuration:
+  properties:
+    domain:
+      type: string
+      description: Domain to check for DNS resolution and HTTPS certificate validity.
+    alert-days:
+      type: integer
+      minimum: 1
+      default: 10
+      description: Fail when the HTTPS certificate expires within this many days.
+  required:
+    - domain
+  additionalProperties: false
